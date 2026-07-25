@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "finance-agent": {
+      "command": "node",
+      "args": ["/ABSOLUTE/PATH/TO/finance-agent/dist/index.js"],
+      "env": {
+        "PLAID_CLIENT_ID": "your-client-id",
+        "PLAID_SECRET": "your-secret",
+        "PLAID_ENV": "production",
+        "ENCRYPTION_KEY": "your-long-random-string",
+        "DATABASE_PATH": "/ABSOLUTE/PATH/TO/finance-agent/data/finance.live.db"
+      }
+    }
+  }
+}
