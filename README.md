@@ -1,38 +1,30 @@
 # finance-agent
 
-Plaid-backed MCP server for conversational US personal finance planning in Cursor. No dashboard — connect accounts once, then plan in chat.
+Conversational personal finance for Cursor:
 
-Requires Node.js 22+ (uses built-in `node:sqlite`).
+- **Bank data** → [Plaid CLI](https://plaid.com/docs/resources/cli/) (`plaid link`, balances, transactions, …)
+- **Planning memory** → this MCP + local SQLite (goals, monthly notes, category rules, nicknames)
+
+No dashboard. Link accounts with the CLI, then plan in chat.
+
+Requires Node.js 22+ and the Plaid CLI (`brew install plaid/plaid-cli/plaid`).
 
 ## Setup
 
 ```bash
+# Plaid Trial / Production (one-time)
+plaid login
+plaid link --products transactions,liabilities,investments
+
+# This MCP
 cp .env.example .env
-# Fill PLAID_CLIENT_ID, PLAID_SECRET, ENCRYPTION_KEY
 npm install
 npm run build
 ```
 
-Get Plaid keys at [dashboard.plaid.com](https://dashboard.plaid.com/developers/keys). Start with `PLAID_ENV=sandbox`, then move to live banks with `PLAID_ENV=production` (Plaid’s old separate Development environment is deprecated).
-
-### Live banks (Production / Trial)
-
-1. In the Plaid Dashboard, enable **Production** access (Trial or Limited Production is enough for personal use).
-2. Copy the **Production** secret into `.env` (`PLAID_SECRET`) and set `PLAID_ENV=production`.
-3. For Chase / Amex / Capital One / etc., set an HTTPS `PLAID_REDIRECT_URI` (ngrok is fine) ending in `/oauth`, and allowlist that exact URI under Team → API → Allowed redirect URIs.
-4. Run `npm run connect` and link real accounts. Live items are stored in `data/finance.live.db` (sandbox stays separate).
-
-## Connect accounts
-
-```bash
-npm run connect
-```
-
-Open the printed `localhost` URL and complete Plaid Link. Access tokens are encrypted in local SQLite.
+Trial plans support up to 10 linked Items.
 
 ## Add to Cursor MCP
-
-In Cursor MCP settings, add:
 
 ```json
 {
@@ -41,30 +33,33 @@ In Cursor MCP settings, add:
       "command": "node",
       "args": ["/ABSOLUTE/PATH/TO/finance-agent/dist/index.js"],
       "env": {
-        "PLAID_CLIENT_ID": "your-client-id",
-        "PLAID_SECRET": "your-secret",
-        "PLAID_ENV": "sandbox",
-        "ENCRYPTION_KEY": "your-long-random-string",
-        "DATABASE_PATH": "/ABSOLUTE/PATH/TO/finance-agent/data/finance.live.db"
+        "DATABASE_PATH": "/ABSOLUTE/PATH/TO/finance-agent/data/planning.db"
       }
     }
   }
 }
 ```
 
-Or point `command` at `npx`/`tsx` and `args` at `src/index.ts` during development.
+The MCP shells out to `plaid … -j`, so the CLI must be on `PATH` for the Cursor process.
 
-## Agent tools
+## Tools
 
-| Tool | Purpose |
-|---|---|
-| `list_connections` | Linked institutions/accounts |
-| `get_balances` | Live balances |
-| `get_transactions` | Transactions by date range |
-| `summarize_cashflow` | Inflow/outflow + categories for planning |
-| `list_goals` / `upsert_goal` | Persistent goals |
-| `list_plan_notes` / `add_plan_note` | Month-to-month planning memory |
-| `add_category_rule` | Merchant → category rules |
-| `setup_help` | Setup reminders |
+| Tool | Source | Purpose |
+|---|---|---|
+| `list_linked_items` | CLI | Linked institutions |
+| `get_balances` | CLI | Live balances |
+| `get_transactions` | CLI | Transactions by date |
+| `get_liabilities` | CLI | Cards/loans detail |
+| `get_investments` | CLI | Holdings |
+| `summarize_cashflow` | CLI + local rules | Monthly planning summary |
+| `list_goals` / `upsert_goal` | SQLite | Persistent goals |
+| `list_plan_notes` / `add_plan_note` | SQLite | Month-to-month notes |
+| `add_category_rule` | SQLite | Merchant → category |
+| `upsert_account_nickname` | SQLite | Friendly account names |
 
-Tax portals are not available via Plaid — store estimates and due dates as goals/notes.
+## Link more accounts
+
+```bash
+plaid link --products transactions,liabilities,investments
+plaid item list
+```

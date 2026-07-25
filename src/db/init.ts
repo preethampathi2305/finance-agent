@@ -1,4 +1,4 @@
 import { getDb } from "./index.js";
 
 getDb();
-console.log("Database initialized.");
+console.log("Planning database initialized.");

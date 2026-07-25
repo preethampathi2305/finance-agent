@@ -6,27 +6,6 @@ import { config } from "../config.js";
 let db: DatabaseSync | null = null;
 
 const SCHEMA = `
-CREATE TABLE IF NOT EXISTS plaid_items (
-  item_id TEXT PRIMARY KEY,
-  access_token_enc TEXT NOT NULL,
-  institution_id TEXT,
-  institution_name TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS accounts (
-  account_id TEXT PRIMARY KEY,
-  item_id TEXT NOT NULL REFERENCES plaid_items(item_id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  official_name TEXT,
-  mask TEXT,
-  type TEXT,
-  subtype TEXT,
-  currency TEXT DEFAULT 'USD',
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
 CREATE TABLE IF NOT EXISTS goals (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
@@ -53,6 +32,14 @@ CREATE TABLE IF NOT EXISTS category_rules (
   category TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS account_nicknames (
+  account_id TEXT PRIMARY KEY,
+  nickname TEXT NOT NULL,
+  institution_hint TEXT,
+  notes TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `;
 
 export function getDb(): DatabaseSync {
@@ -66,24 +53,6 @@ export function getDb(): DatabaseSync {
   db.exec(SCHEMA);
   return db;
 }
-
-export type PlaidItemRow = {
-  item_id: string;
-  access_token_enc: string;
-  institution_id: string | null;
-  institution_name: string | null;
-};
-
-export type AccountRow = {
-  account_id: string;
-  item_id: string;
-  name: string;
-  official_name: string | null;
-  mask: string | null;
-  type: string | null;
-  subtype: string | null;
-  currency: string | null;
-};
 
 export type GoalRow = {
   id: number;
@@ -100,4 +69,11 @@ export type PlanNoteRow = {
   month: string;
   content: string;
   updated_at: string;
+};
+
+export type AccountNicknameRow = {
+  account_id: string;
+  nickname: string;
+  institution_hint: string | null;
+  notes: string | null;
 };

@@ -1,4 +1,9 @@
-import { getDb, type GoalRow, type PlanNoteRow } from "../db/index.js";
+import {
+  getDb,
+  type AccountNicknameRow,
+  type GoalRow,
+  type PlanNoteRow,
+} from "../db/index.js";
 
 export function listGoals(status?: string): GoalRow[] {
   if (status) {
@@ -137,4 +142,43 @@ export function categorizeName(name: string): string | null {
     }
   }
   return null;
+}
+
+export function listAccountNicknames(): AccountNicknameRow[] {
+  return getDb()
+    .prepare(
+      `SELECT account_id, nickname, institution_hint, notes FROM account_nicknames
+       ORDER BY nickname`,
+    )
+    .all() as AccountNicknameRow[];
+}
+
+export function upsertAccountNickname(input: {
+  account_id: string;
+  nickname: string;
+  institution_hint?: string | null;
+  notes?: string | null;
+}): AccountNicknameRow {
+  getDb()
+    .prepare(
+      `INSERT INTO account_nicknames (account_id, nickname, institution_hint, notes)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(account_id) DO UPDATE SET
+         nickname = excluded.nickname,
+         institution_hint = excluded.institution_hint,
+         notes = excluded.notes,
+         updated_at = datetime('now')`,
+    )
+    .run(
+      input.account_id,
+      input.nickname,
+      input.institution_hint ?? null,
+      input.notes ?? null,
+    );
+  return getDb()
+    .prepare(
+      `SELECT account_id, nickname, institution_hint, notes FROM account_nicknames
+       WHERE account_id = ?`,
+    )
+    .get(input.account_id) as AccountNicknameRow;
 }

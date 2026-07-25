@@ -2,19 +2,16 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { getDb } from "./db/index.js";
-import {
-  getLiveBalances,
-  getTransactions,
-  summarizeCashflow,
-  syncAccountMetadata,
-} from "./finance/plaid-data.js";
-import { listItems, listStoredAccounts } from "./store/items.js";
+import { summarizeCashflow } from "./finance/cashflow.js";
+import { INSTITUTION_NAMES, runPlaid } from "./plaid-cli.js";
 import {
   addCategoryRule,
   addPlanNote,
+  listAccountNicknames,
   listCategoryRules,
   listGoals,
   listPlanNotes,
+  upsertAccountNickname,
   upsertGoal,
 } from "./store/planning.js";
 
@@ -22,7 +19,7 @@ getDb();
 
 const server = new McpServer({
   name: "finance-agent",
-  version: "0.1.0",
+  version: "0.2.0",
 });
 
 function json(data: unknown) {
@@ -39,91 +36,97 @@ function errorResult(error: unknown) {
   };
 }
 
-server.tool(
-  "list_connections",
-  "List connected Plaid institutions/items (banks and cards already linked).",
-  {},
-  async () => {
-    try {
-      return json({ items: listItems(), accounts: listStoredAccounts() });
-    } catch (error) {
-      return errorResult(error);
-    }
-  },
-);
+function enrichInstitutions(data: unknown): unknown {
+  if (!data || typeof data !== "object") return data;
+  const root = data as { items?: Array<{ item?: { institution_id?: string }; institution_id?: string }> };
+  if (!Array.isArray(root.items)) return data;
+  return {
+    ...root,
+    items: root.items.map((entry) => {
+      const institutionId =
+        entry.item?.institution_id ?? entry.institution_id ?? "";
+      return {
+        ...entry,
+        institution_name:
+          INSTITUTION_NAMES[institutionId] ?? (institutionId || null),
+      };
+    }),
+  };
+}
+
+async function cliOrError(args: string[]) {
+  const result = await runPlaid(args);
+  if (!result.ok) {
+    return errorResult(result.stderr || "Plaid CLI command failed");
+  }
+  return json(enrichInstitutions(result.data));
+}
+
+// ── Bank data via Plaid CLI ───────────────────────────────────────────────
 
 server.tool(
-  "sync_accounts",
-  "Refresh stored account metadata from Plaid for all connected items.",
+  "list_linked_items",
+  "List Plaid Items linked via the Plaid CLI (Trial/Production). Prefer this over any local connect DB.",
   {},
-  async () => {
-    try {
-      return json(await syncAccountMetadata());
-    } catch (error) {
-      return errorResult(error);
-    }
-  },
+  async () => cliOrError(["item", "list"]),
 );
 
 server.tool(
   "get_balances",
-  "Fetch live balances for all connected bank and credit accounts.",
+  "Fetch live balances for all linked Items using `plaid balance --all`.",
   {},
-  async () => {
-    try {
-      const items = listItems();
-      if (!items.length) {
-        return json({
-          message:
-            "No accounts connected yet. Run `npm run connect` and link an institution in the browser.",
-          balances: [],
-        });
-      }
-      return json(await getLiveBalances());
-    } catch (error) {
-      return errorResult(error);
-    }
-  },
+  async () => cliOrError(["balance", "--all"]),
 );
 
 server.tool(
   "get_transactions",
-  "Fetch transactions in a date range. Optional filters: account_id, search text, limit.",
+  "Fetch transactions via Plaid CLI for a date range across all linked Items.",
   {
-    start_date: z
-      .string()
-      .describe("Start date YYYY-MM-DD"),
-    end_date: z.string().describe("End date YYYY-MM-DD"),
-    account_id: z.string().optional().describe("Plaid account_id filter"),
-    search: z
+    start_date: z.string().describe("YYYY-MM-DD"),
+    end_date: z.string().describe("YYYY-MM-DD"),
+    count: z.number().int().min(1).max(250).optional(),
+    item_id: z
       .string()
       .optional()
-      .describe("Case-insensitive match on name/merchant"),
-    limit: z.number().int().min(1).max(500).optional(),
+      .describe("Optional Item id; default is --all"),
   },
-  async ({ start_date, end_date, account_id, search, limit }) => {
-    try {
-      return json(
-        await getTransactions({
-          startDate: start_date,
-          endDate: end_date,
-          accountId: account_id,
-          search,
-          limit,
-        }),
-      );
-    } catch (error) {
-      return errorResult(error);
-    }
+  async ({ start_date, end_date, count, item_id }) => {
+    const args = [
+      "transactions",
+      "list",
+      "--start-date",
+      start_date,
+      "--end-date",
+      end_date,
+      "--count",
+      String(count ?? 100),
+    ];
+    if (item_id) args.push("--item", item_id);
+    else args.push("--all");
+    return cliOrError(args);
   },
 );
 
 server.tool(
+  "get_liabilities",
+  "Fetch credit/loan liability details via `plaid liabilities --all`.",
+  {},
+  async () => cliOrError(["liabilities", "--all"]),
+);
+
+server.tool(
+  "get_investments",
+  "Fetch investment holdings via `plaid investments holdings --all`.",
+  {},
+  async () => cliOrError(["investments", "holdings", "--all"]),
+);
+
+server.tool(
   "summarize_cashflow",
-  "Summarize inflow/outflow, category spend, and account balances for a period. Use for monthly planning.",
+  "Summarize inflow/outflow and category spend for a period using Plaid CLI data + local category rules. Use for monthly planning.",
   {
-    start_date: z.string().describe("Start date YYYY-MM-DD"),
-    end_date: z.string().describe("End date YYYY-MM-DD"),
+    start_date: z.string().describe("YYYY-MM-DD"),
+    end_date: z.string().describe("YYYY-MM-DD"),
   },
   async ({ start_date, end_date }) => {
     try {
@@ -139,14 +142,13 @@ server.tool(
   },
 );
 
+// ── Local planning memory ─────────────────────────────────────────────────
+
 server.tool(
   "list_goals",
   "List saved financial goals the agent should remember across chats.",
   {
-    status: z
-      .string()
-      .optional()
-      .describe("Optional filter, e.g. active or done"),
+    status: z.string().optional().describe("Optional filter, e.g. active"),
   },
   async ({ status }) => {
     try {
@@ -161,13 +163,13 @@ server.tool(
   "upsert_goal",
   "Create or update a financial goal (debt payoff, savings target, etc.).",
   {
-    id: z.number().int().optional().describe("Existing goal id to update"),
+    id: z.number().int().optional(),
     title: z.string(),
     target_amount: z.number().optional().nullable(),
     current_amount: z.number().optional().nullable(),
-    due_date: z.string().optional().nullable().describe("YYYY-MM-DD"),
+    due_date: z.string().optional().nullable(),
     notes: z.string().optional().nullable(),
-    status: z.string().optional().describe("active | done | paused"),
+    status: z.string().optional(),
   },
   async (args) => {
     try {
@@ -182,10 +184,7 @@ server.tool(
   "list_plan_notes",
   "List monthly planning notes saved from prior conversations.",
   {
-    month: z
-      .string()
-      .optional()
-      .describe("YYYY-MM; omit for recent notes across months"),
+    month: z.string().optional().describe("YYYY-MM"),
   },
   async ({ month }) => {
     try {
@@ -198,7 +197,7 @@ server.tool(
 
 server.tool(
   "add_plan_note",
-  "Save a planning note for a month so future chats keep context (e.g. 'keep dining under $400').",
+  "Save a planning note for a month so future chats keep context.",
   {
     month: z.string().describe("YYYY-MM"),
     content: z.string(),
@@ -214,7 +213,7 @@ server.tool(
 
 server.tool(
   "list_category_rules",
-  "List merchant substring → category rules used to improve transaction labeling.",
+  "List merchant substring → category rules used when summarizing cashflow.",
   {},
   async () => {
     try {
@@ -229,7 +228,7 @@ server.tool(
   "add_category_rule",
   "Add a categorization rule: if merchant/name contains match_text, assign category.",
   {
-    match_text: z.string().describe("Case-insensitive substring"),
+    match_text: z.string(),
     category: z.string(),
   },
   async ({ match_text, category }) => {
@@ -242,23 +241,71 @@ server.tool(
 );
 
 server.tool(
+  "list_account_nicknames",
+  "List human-friendly nicknames for Plaid account_ids.",
+  {},
+  async () => {
+    try {
+      return json(listAccountNicknames());
+    } catch (error) {
+      return errorResult(error);
+    }
+  },
+);
+
+server.tool(
+  "upsert_account_nickname",
+  "Save a nickname for an account_id (e.g. 'Chase checking', 'Amex BCE').",
+  {
+    account_id: z.string(),
+    nickname: z.string(),
+    institution_hint: z.string().optional().nullable(),
+    notes: z.string().optional().nullable(),
+  },
+  async (args) => {
+    try {
+      return json(upsertAccountNickname(args));
+    } catch (error) {
+      return errorResult(error);
+    }
+  },
+);
+
+server.tool(
   "setup_help",
-  "Explain how to connect Plaid accounts and use this finance agent.",
+  "Explain how banking (Plaid CLI) and planning memory (this MCP) work together.",
   {},
   async () =>
     json({
-      steps: [
-        "Copy .env.example to .env and fill PLAID_CLIENT_ID, PLAID_SECRET, ENCRYPTION_KEY.",
-        "Use PLAID_ENV=sandbox first; switch to development for real US banks after Plaid approval.",
-        "Run `npm run connect` and open the printed localhost URL to link accounts via Plaid Link.",
-        "Add this MCP server in Cursor (see README). Then ask things like balances, cashflow, or monthly plans.",
-        "Tax portals usually need CSV/manual notes — store estimates with add_plan_note / upsert_goal.",
+      architecture: {
+        bank_data: "Plaid CLI (link, balances, transactions, investments, liabilities)",
+        planning_memory:
+          "This MCP + local SQLite (goals, monthly notes, category rules, nicknames)",
+      },
+      link_accounts: [
+        "plaid login",
+        "plaid link --products transactions,liabilities,investments",
+        "Trial plan: up to 10 Items",
+      ],
+      agent_bank_tools: [
+        "list_linked_items",
+        "get_balances",
+        "get_transactions",
+        "get_liabilities",
+        "get_investments",
+        "summarize_cashflow",
+      ],
+      agent_planning_tools: [
+        "list_goals / upsert_goal",
+        "list_plan_notes / add_plan_note",
+        "add_category_rule",
+        "upsert_account_nickname",
       ],
       example_prompts: [
-        "What are my balances right now?",
-        "Summarize cashflow for 2026-07-01 to 2026-07-25 and suggest a plan for the rest of the month.",
-        "Save a note for 2026-07: keep dining under $400 and put $800 toward the card.",
-        "Create a goal to pay the Chase card down to $0 by December.",
+        "What are my balances and card utilization right now?",
+        "Summarize cashflow for this month and suggest a plan for the rest of July.",
+        "Save a note for 2026-07: keep dining under $400 and put $800 toward Amex.",
+        "Create a goal to pay the Chase card under $200 by September.",
       ],
     }),
 );
